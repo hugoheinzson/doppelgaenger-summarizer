@@ -1,0 +1,57 @@
+name: Doppelgänger Podcast Digest
+
+on:
+  # Run twice a week: Wednesday and Saturday at 10:00 UTC
+  # (episodes usually drop Mon/Thu morning German time)
+  schedule:
+    - cron: "0 10 * * 3"  # Wednesday
+    - cron: "0 10 * * 6"  # Saturday
+  # Allow manual trigger for testing
+  workflow_dispatch:
+
+jobs:
+  summarize:
+    name: Fetch & Summarize New Episodes
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Restore the last-processed state from cache
+      - name: Restore state cache
+        uses: actions/cache@v4
+        id: state-cache
+        with:
+          path: last_processed.json
+          key: podcast-state-${{ runner.os }}
+          restore-keys: |
+            podcast-state-
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run summarizer
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          # Optional: only needed if doppelgaenger.ai is unavailable
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python summarizer.py
+
+      # Save updated state so next run knows where we left off
+      - name: Save state cache
+        uses: actions/cache@v4
+        if: always()
+        with:
+          path: last_processed.json
+          key: podcast-state-${{ runner.os }}-${{ github.run_id }}
