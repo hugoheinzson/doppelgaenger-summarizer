@@ -249,22 +249,49 @@ def get_transcript(episode: dict) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 SUMMARY_PROMPT = """Du bekommst das Transkript einer Doppelgänger Tech Talk Podcast-Folge.
-Erstelle eine strukturierte, deutschsprachige Zusammenfassung mit folgenden Abschnitten:
+Erstelle eine strukturierte, deutschsprachige Zusammenfassung.
 
-## 🎙️ Themen dieser Folge
-- Stichpunktliste der besprochenen Themen - vollständig auf Hauptthemen-Ebene und unteraspekte je Thema!
+Der Podcast hat wiederkehrende Rubriken. Ordne die Themen in diese Überkapitel ein,
+ABER nur wenn sie in dieser Folge tatsächlich vorkommen (nicht erzwingen):
 
-## 💡 Kernaussagen & Meinungen
-- Die wichtigsten Meinungen und Einschätzungen der Hosts zu den Themen
-- Wer hat was gesagt (wenn erkennbar: Pip / Glöck)
+- **Earnings** — Analyse von Quartalszahlen und Geschäftsberichten
+- **Schmuddelecke** — Kontroverse, ethisch fragwürdige oder skandalöse Themen
 
-## 📊 Unternehmen & Produkte
-- Genannte Unternehmen, Produkte oder Personen mit kurzer Einordnung
+Themen die in keine Rubrik passen kommen unter "Weitere Themen".
 
-## ⚡ Das Wichtigste in 6 Sätzen
+## Gewünschtes Format
+
+### ⚡ Das Wichtigste in 6 Sätzen
 Eine sehr kurze Zusammenfassung für jemanden der nur 120 Sekunden Zeit hat.
 
-Halte die Zusammenfassung prägnant und informativ. Fokus auf Fakten, Zahlen und konkrete Meinungen."""
+### 📊 Earnings (nur wenn in der Folge vorhanden)
+Für jedes besprochene Unternehmen:
+
+#### **Unternehmensname**
+- Wichtigste Zahlen und Fakten
+- Meinungen & Kernaussagen:
+  - Was sagen Pip und/oder Glöckner dazu?
+
+### 🚨 Schmuddelecke (nur wenn in der Folge vorhanden)
+Für jedes Thema:
+
+#### **Thema**
+- Infos und Fakten
+- Meinungen & Kernaussagen der Hosts
+
+### 🎙️ Weitere Themen
+Für jedes Thema:
+
+#### **Thema-Titel**
+- Infos: Wichtigste Fakten, Zahlen, Hintergründe (als Stichpunkte)
+- Meinungen & Kernaussagen:
+  - Wer hat was gesagt (Pip / Glöckner), konkrete Einschätzungen
+
+## Regeln
+- Halte die Zusammenfassung prägnant und informativ
+- Fokus auf Fakten, Zahlen und konkrete Meinungen
+- Pro Thema 3–6 Stichpunkte für Infos, 1–3 für Meinungen
+- Verwende Markdown: ##/### für Überschriften, #### für Themen, - für Listen, **fett** für Hervorhebungen"""
 
 
 def summarize_with_claude(transcript: str, episode_title: str) -> str:
@@ -323,21 +350,64 @@ def send_email(subject: str, html_body: str, text_body: str) -> None:
     log.info("Email sent successfully")
 
 
+def _markdown_to_html(text: str) -> str:
+    """Convert markdown summary to email-safe HTML."""
+    lines = text.split("\n")
+    html_lines: list[str] = []
+    in_list = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Headings: ## or ###
+        heading_match = re.match(r"^(#{1,4})\s+(.*)", stripped)
+        if heading_match:
+            if in_list:
+                html_lines.append("</ul>")
+                in_list = False
+            level = len(heading_match.group(1))
+            tag = f"h{min(level + 1, 4)}"  # ## -> h3, ### -> h4
+            html_lines.append(f"<{tag}>{heading_match.group(2)}</{tag}>")
+            continue
+
+        # List items: - or *
+        list_match = re.match(r"^[-*]\s+(.*)", stripped)
+        if list_match:
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            item = list_match.group(1)
+            # Bold: **text**
+            item = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
+            html_lines.append(f"  <li>{item}</li>")
+            continue
+
+        # Close list if we hit a non-list line
+        if in_list and not stripped:
+            html_lines.append("</ul>")
+            in_list = False
+
+        if not stripped:
+            html_lines.append("")
+            continue
+
+        # Regular paragraph — also handle bold
+        para = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", stripped)
+        html_lines.append(f"<p>{para}</p>")
+
+    if in_list:
+        html_lines.append("</ul>")
+
+    return "\n".join(html_lines)
+
+
 def build_email(episode: dict, summary: str, transcript_source: str) -> tuple[str, str, str]:
     """Return (subject, html, plain_text)."""
     title = episode["title"]
     published = episode.get("published", "")
     subject = f"🎙️ Doppelgänger Zusammenfassung: {title}"
 
-    # Convert markdown-ish summary to simple HTML
-    html_summary = summary.replace("\n", "<br>\n")
-    for heading_marker in ["## 🎙️", "## 💡", "## 📊", "## ⚡"]:
-        html_summary = html_summary.replace(
-            heading_marker,
-            f"<h3>{heading_marker.replace('## ', '')}"
-        )
-    # Close h3 tags
-    html_summary = re.sub(r"(<h3>[^<]+)", r"\1</h3>", html_summary)
+    html_summary = _markdown_to_html(summary)
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -347,6 +417,9 @@ def build_email(episode: dict, summary: str, transcript_source: str) -> tuple[st
     body {{ font-family: Arial, sans-serif; max-width: 700px; margin: 0 auto; padding: 20px; color: #333; }}
     h1 {{ color: #1a1a2e; border-bottom: 2px solid #e94560; padding-bottom: 10px; }}
     h3 {{ color: #16213e; margin-top: 24px; }}
+    h4 {{ color: #2a4a7f; margin-top: 18px; margin-bottom: 6px; }}
+    ul {{ margin: 8px 0; padding-left: 24px; }}
+    li {{ margin-bottom: 4px; line-height: 1.5; }}
     .meta {{ color: #666; font-size: 0.9em; margin-bottom: 20px; }}
     .source {{ background: #f0f0f0; padding: 4px 8px; border-radius: 4px; font-size: 0.8em; }}
     a {{ color: #e94560; }}
