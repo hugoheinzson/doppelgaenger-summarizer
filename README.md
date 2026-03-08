@@ -1,76 +1,106 @@
-# Doppelgänger Podcast Summarizer
+# Doppelgänger Podcast Digest
 
-Automatisches Transkribieren und Zusammenfassen neuer Doppelgänger Tech Talk Episoden, 2x pro Woche per E-Mail zugestellt.
+Automatically summarizes new [Doppelgänger Tech Talk](https://www.doppelgaenger.io) episodes and delivers a structured digest to your inbox — twice a week, fully automated via GitHub Actions.
 
-## Funktionsweise
+## What it does
 
 ```
-RSS Feed (feeds.megaphone.fm)
-        ↓
-  Neue Episoden erkennen
-        ↓
-  Transkript holen (doppelgaenger.ai)
-  ↳ Fallback: OpenAI Whisper API
-        ↓
-  Zusammenfassung mit Claude API
-        ↓
-  E-Mail versenden
+RSS Feed
+   ↓
+Detect new episodes (max 2 per run)
+   ↓
+Fetch transcript from doppelgaenger.ai
+   ↳ Fallback: OpenAI Whisper (audio transcription)
+   ↳ Fallback: RSS description
+   ↓
+Summarize with Claude AI (claude-sonnet-4-6)
+   ↓
+Send HTML email digest
 ```
 
-## Setup
+## What the email looks like
 
-### 1. Repository forken / klonen
+Each digest is structured around the podcast's recurring segments:
 
-### 2. GitHub Secrets einrichten
+- **⚡ Das Wichtigste** — 6-sentence summary for a 2-minute read
+- **📊 Earnings** — Quarterly results with host opinions *(if covered)*
+- **🚨 Schmuddelecke** — Controversial/shady tech topics *(if covered)*
+- **🎙️ Weitere Themen** — All other topics, each with facts + host opinions
 
-Gehe zu `Settings → Secrets and variables → Actions` und füge hinzu:
+## Setup (fork & run yourself)
 
-| Secret | Beschreibung |
+### 1. Fork this repository
+
+Click **Fork** in the top right on GitHub.
+
+### 2. Add GitHub Secrets
+
+Go to `Settings → Secrets and variables → Actions → New repository secret`:
+
+| Secret | Description |
 |--------|-------------|
-| `ANTHROPIC_API_KEY` | API Key von [console.anthropic.com](https://console.anthropic.com) |
-| `EMAIL_FROM` | Absender-E-Mail (z.B. deine Gmail-Adresse) |
-| `EMAIL_TO` | Empfänger-E-Mail |
-| `EMAIL_PASSWORD` | App-Passwort (bei Gmail: 2FA aktivieren → App-Passwort erstellen) |
-| `EMAIL_SMTP_HOST` | SMTP-Server (Standard: `smtp.gmail.com`) |
-| `EMAIL_SMTP_PORT` | SMTP-Port (Standard: `587`) |
-| `OPENAI_API_KEY` | *(Optional)* Nur nötig wenn doppelgaenger.ai nicht verfügbar |
+| `ANTHROPIC_API_KEY` | API key from [console.anthropic.com](https://console.anthropic.com) |
+| `EMAIL_FROM` | Sender email address (e.g. your Gmail) |
+| `EMAIL_TO` | Recipient email address |
+| `EMAIL_PASSWORD` | App password — see below |
+| `EMAIL_SMTP_HOST` | SMTP server (default: `smtp.gmail.com`) |
+| `EMAIL_SMTP_PORT` | SMTP port (default: `587`) |
+| `OPENAI_API_KEY` | *(Optional)* Only needed if doppelgaenger.ai is unavailable |
 
-### 3. Gmail App-Passwort erstellen (empfohlen)
+### 3. Create a Gmail App Password
 
-1. Google-Konto → Sicherheit → 2-Faktor-Authentifizierung aktivieren
-2. Sicherheit → App-Passwörter → Neues App-Passwort für "Mail" erstellen
-3. Den 16-stelligen Code als `EMAIL_PASSWORD` eintragen
+1. Enable 2-factor authentication on your Google account
+2. Go to **Google Account → Security → App Passwords**
+3. Create a new app password for "Mail"
+4. Use the 16-character code as `EMAIL_PASSWORD`
 
-### 4. Workflow aktivieren
+Other email providers work too — just set `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT` accordingly.
 
-Der Workflow läuft automatisch:
-- **Mittwoch** um 10:00 UTC
-- **Samstag** um 10:00 UTC
+### 4. Enable GitHub Actions
 
-Oder manuell via `Actions → Doppelgänger Podcast Digest → Run workflow`.
+The workflow runs automatically:
+- **Wednesday** at 10:00 UTC
+- **Saturday** at 10:00 UTC
 
-## Lokales Testen
+You can also trigger it manually via `Actions → Doppelgänger Podcast Digest → Run workflow`.
+
+## Run locally
 
 ```bash
+git clone https://github.com/YOUR_USERNAME/Doppelganger
+cd Doppelganger
 pip install -r requirements.txt
 
 export ANTHROPIC_API_KEY="sk-ant-..."
-export EMAIL_FROM="dich@gmail.com"
-export EMAIL_TO="dich@gmail.com"
+export EMAIL_FROM="you@gmail.com"
+export EMAIL_TO="you@gmail.com"
 export EMAIL_PASSWORD="xxxx xxxx xxxx xxxx"
 
 python summarizer.py
 ```
 
-## Was die E-Mail enthält
+## Costs
 
-- **Themen der Folge** — Stichpunktliste
-- **Kernaussagen & Meinungen** — Was denken Pip & Glöck?
-- **Unternehmen & Produkte** — Genannte Namen mit Einordnung
-- **Das Wichtigste in 3 Sätzen** — Für den schnellen Überblick
+Per episode (transcript ~20k tokens input, summary ~800 tokens output):
 
-## Transkript-Quellen
+| Model | Approx. cost |
+|-------|-------------|
+| claude-sonnet-4-6 *(default)* | ~$0.05 |
+| claude-haiku-4-5 | ~$0.02 |
 
-1. **doppelgaenger.ai** — Inoffizielle Site mit KI-Transkripten aller Folgen (primär)
-2. **OpenAI Whisper** — Audio-Transkription als Fallback (~$1/Folge)
-3. **RSS-Beschreibung** — Letzter Fallback (nur Kurzbeschreibung)
+Whisper fallback (only if doppelgaenger.ai is down): ~$0.50–1.00/episode depending on length.
+
+## Transcript sources
+
+1. **doppelgaenger.ai** — Unofficial site with AI transcripts for all episodes (primary, free)
+2. **OpenAI Whisper** — Audio transcription fallback (costs apply)
+3. **RSS description** — Last resort fallback (short text only)
+
+## Adapting for other podcasts
+
+The summarizer is not hardcoded to Doppelgänger. To use it for another podcast:
+
+1. Change `RSS_FEED` in `summarizer.py` to your podcast's RSS feed URL
+2. Remove or update `TRANSCRIPT_BASE` (the doppelgaenger.ai scraping)
+3. Adjust `SUMMARY_PROMPT` to match the format/language you want
+4. Update the cron schedule in `.github/workflows/podcast_digest.yml`
