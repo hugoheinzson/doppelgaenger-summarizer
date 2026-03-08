@@ -252,7 +252,7 @@ SUMMARY_PROMPT = """Du bekommst das Transkript einer Doppelgänger Tech Talk Pod
 Erstelle eine strukturierte, deutschsprachige Zusammenfassung mit folgenden Abschnitten:
 
 ## 🎙️ Themen dieser Folge
-- Stichpunktliste der besprochenen Themen (5–10 Punkte)
+- Stichpunktliste der besprochenen Themen - vollständig auf Hauptthemen-Ebene und unteraspekte je Thema!
 
 ## 💡 Kernaussagen & Meinungen
 - Die wichtigsten Meinungen und Einschätzungen der Hosts zu den Themen
@@ -261,8 +261,8 @@ Erstelle eine strukturierte, deutschsprachige Zusammenfassung mit folgenden Absc
 ## 📊 Unternehmen & Produkte
 - Genannte Unternehmen, Produkte oder Personen mit kurzer Einordnung
 
-## ⚡ Das Wichtigste in 3 Sätzen
-Eine sehr kurze Zusammenfassung für jemanden der nur 30 Sekunden Zeit hat.
+## ⚡ Das Wichtigste in 6 Sätzen
+Eine sehr kurze Zusammenfassung für jemanden der nur 120 Sekunden Zeit hat.
 
 Halte die Zusammenfassung prägnant und informativ. Fokus auf Fakten, Zahlen und konkrete Meinungen."""
 
@@ -281,7 +281,7 @@ def summarize_with_claude(transcript: str, episode_title: str) -> str:
 
     log.info(f"Summarizing episode '{episode_title}' with Claude …")
     message = client.messages.create(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=2048,
         messages=[
             {
