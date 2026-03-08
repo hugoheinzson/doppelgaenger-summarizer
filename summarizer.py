@@ -59,13 +59,19 @@ def save_state(episode_id: str, episode_date: str) -> None:
 # RSS Feed
 # ---------------------------------------------------------------------------
 
-def fetch_new_episodes(last_id: str | None) -> list[dict]:
-    """Return episodes newer than last_id, oldest first."""
+def fetch_new_episodes(last_id: str | None, max_on_first_run: int = 2) -> list[dict]:
+    """Return episodes newer than last_id, oldest first.
+
+    On the very first run (no state), only return the most recent
+    `max_on_first_run` episodes to avoid processing the entire archive.
+    """
     log.info("Fetching RSS feed …")
     feed = feedparser.parse(RSS_FEED)
-    if feed.bozo:
+    # bozo is set for minor issues (e.g. encoding warnings); only fail on real errors
+    if feed.bozo and not feed.entries:
         raise RuntimeError(f"RSS parse error: {feed.bozo_exception}")
 
+    is_first_run = last_id is None
     episodes = []
     for entry in feed.entries:
         ep_id = entry.get("id") or entry.get("guid") or entry.get("link")
@@ -90,7 +96,15 @@ def fetch_new_episodes(last_id: str | None) -> list[dict]:
             "summary": entry.get("summary", ""),
         })
 
-    episodes.reverse()  # oldest first
+    # Feed is newest-first; on first run take only the most recent N
+    if is_first_run and len(episodes) > max_on_first_run:
+        log.info(
+            f"First run: limiting to {max_on_first_run} most recent episodes "
+            f"(skipping {len(episodes) - max_on_first_run} older ones)"
+        )
+        episodes = episodes[:max_on_first_run]
+
+    episodes.reverse()  # process oldest first
     log.info(f"Found {len(episodes)} new episode(s)")
     return episodes
 
@@ -116,11 +130,21 @@ def _parse_date_from_published(published: str) -> str | None:
     return None
 
 
+_UMLAUT_MAP = str.maketrans("äöüÄÖÜß", "aoauouss")
+
 def _build_transcript_url(date_str: str, title: str) -> str:
-    """Build doppelgaenger.ai URL from date and episode title."""
-    slug = title.replace(" ", "_").replace("/", "_").replace("|", "_")
-    slug = "".join(c for c in slug if c.isalnum() or c in "_-")
-    slug = slug[:40]
+    """Build doppelgaenger.ai URL from date and episode title.
+
+    The site uses slugs like: 2024-03-07_Episode_Title_Here
+    Umlauts are transliterated and special chars replaced with underscores.
+    """
+    slug = title.translate(_UMLAUT_MAP)
+    slug = slug.replace(" ", "_").replace("/", "_").replace("|", "_").replace("-", "_")
+    slug = "".join(c for c in slug if c.isalnum() or c == "_")
+    # Collapse multiple underscores and strip trailing ones
+    import re
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    slug = slug[:60]
     return f"{TRANSCRIPT_BASE}{date_str}_{slug}"
 
 
@@ -274,8 +298,8 @@ def summarize_with_claude(transcript: str, episode_title: str) -> str:
 # ---------------------------------------------------------------------------
 
 def send_email(subject: str, html_body: str, text_body: str) -> None:
-    smtp_host = os.environ.get("EMAIL_SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "587"))
+    smtp_host = os.environ.get("EMAIL_SMTP_HOST") or "smtp.gmail.com"
+    smtp_port = int(os.environ.get("EMAIL_SMTP_PORT") or "587")
     email_from = os.environ.get("EMAIL_FROM")
     email_to = os.environ.get("EMAIL_TO")
     email_password = os.environ.get("EMAIL_PASSWORD")
