@@ -59,23 +59,23 @@ def save_state(episode_id: str, episode_date: str) -> None:
 # RSS Feed
 # ---------------------------------------------------------------------------
 
-def fetch_new_episodes(last_id: str | None, max_on_first_run: int = 2) -> list[dict]:
-    """Return episodes newer than last_id, oldest first.
+MAX_EPISODES_PER_RUN = 2
 
-    On the very first run (no state), only return the most recent
-    `max_on_first_run` episodes to avoid processing the entire archive.
-    """
+
+def fetch_new_episodes(last_id: str | None) -> list[dict]:
+    """Return at most MAX_EPISODES_PER_RUN episodes newer than last_id, oldest first."""
     log.info("Fetching RSS feed …")
     feed = feedparser.parse(RSS_FEED)
     # bozo is set for minor issues (e.g. encoding warnings); only fail on real errors
     if feed.bozo and not feed.entries:
         raise RuntimeError(f"RSS parse error: {feed.bozo_exception}")
 
-    is_first_run = last_id is None
     episodes = []
     for entry in feed.entries:
         ep_id = entry.get("id") or entry.get("guid") or entry.get("link")
         if ep_id == last_id:
+            break
+        if len(episodes) >= MAX_EPISODES_PER_RUN:
             break
         audio_url = None
         for link in entry.get("links", []):
@@ -95,14 +95,6 @@ def fetch_new_episodes(last_id: str | None, max_on_first_run: int = 2) -> list[d
             "audio_url": audio_url,
             "summary": entry.get("summary", ""),
         })
-
-    # Feed is newest-first; on first run take only the most recent N
-    if is_first_run and len(episodes) > max_on_first_run:
-        log.info(
-            f"First run: limiting to {max_on_first_run} most recent episodes "
-            f"(skipping {len(episodes) - max_on_first_run} older ones)"
-        )
-        episodes = episodes[:max_on_first_run]
 
     episodes.reverse()  # process oldest first
     log.info(f"Found {len(episodes)} new episode(s)")
