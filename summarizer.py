@@ -16,6 +16,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+import re
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -122,7 +124,14 @@ def _parse_date_from_published(published: str) -> str | None:
     return None
 
 
-_UMLAUT_MAP = str.maketrans("äöüÄÖÜß", "aoauouss")
+_UMLAUT_MAP = {"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"}
+
+
+def _transliterate(text: str) -> str:
+    for k, v in _UMLAUT_MAP.items():
+        text = text.replace(k, v)
+    return text
+
 
 def _build_transcript_url(date_str: str, title: str) -> str:
     """Build doppelgaenger.ai URL from date and episode title.
@@ -130,11 +139,10 @@ def _build_transcript_url(date_str: str, title: str) -> str:
     The site uses slugs like: 2024-03-07_Episode_Title_Here
     Umlauts are transliterated and special chars replaced with underscores.
     """
-    slug = title.translate(_UMLAUT_MAP)
+    slug = _transliterate(title)
     slug = slug.replace(" ", "_").replace("/", "_").replace("|", "_").replace("-", "_")
     slug = "".join(c for c in slug if c.isalnum() or c == "_")
     # Collapse multiple underscores and strip trailing ones
-    import re
     slug = re.sub(r"_+", "_", slug).strip("_")
     slug = slug[:60]
     return f"{TRANSCRIPT_BASE}{date_str}_{slug}"
@@ -329,7 +337,6 @@ def build_email(episode: dict, summary: str, transcript_source: str) -> tuple[st
             f"<h3>{heading_marker.replace('## ', '')}"
         )
     # Close h3 tags
-    import re
     html_summary = re.sub(r"(<h3>[^<]+)", r"\1</h3>", html_summary)
 
     html = f"""<!DOCTYPE html>
