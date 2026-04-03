@@ -309,7 +309,7 @@ def summarize_with_claude(transcript: str, episode_title: str) -> str:
     log.info(f"Summarizing episode '{episode_title}' with Claude …")
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=2048,
+        max_tokens=8192,  # increased from 2048 to prevent summary truncation
         messages=[
             {
                 "role": "user",
@@ -351,17 +351,29 @@ def send_email(subject: str, html_body: str, text_body: str) -> None:
 
 
 def _markdown_to_html(text: str) -> str:
-    """Convert markdown summary to email-safe HTML."""
+    """Convert markdown summary to email-safe HTML.
+
+    Supports:
+    - Headings: # through ####
+    - Top-level list items: - or * (no leading spaces)
+    - Indented sub-items:   - or   * (2+ leading spaces)
+    - Bold: **text**
+    """
     lines = text.split("\n")
     html_lines: list[str] = []
     in_list = False
+    in_sublist = False
 
     for line in lines:
-        stripped = line.strip()
+        raw = line.rstrip()
+        stripped = raw.strip()
 
         # Headings: ## or ###
         heading_match = re.match(r"^(#{1,4})\s+(.*)", stripped)
         if heading_match:
+            if in_sublist:
+                html_lines.append("</ul>")
+                in_sublist = False
             if in_list:
                 html_lines.append("</ul>")
                 in_list = False
@@ -370,19 +382,38 @@ def _markdown_to_html(text: str) -> str:
             html_lines.append(f"<{tag}>{heading_match.group(2)}</{tag}>")
             continue
 
-        # List items: - or *
+        # Indented sub-list items (2+ leading spaces before - or *)
+        sublist_match = re.match(r"^ {2,}[-*]\s+(.*)", raw)
+        if sublist_match:
+            if not in_list:
+                html_lines.append("<ul>")
+                in_list = True
+            if not in_sublist:
+                html_lines.append("  <ul>")
+                in_sublist = True
+            item = sublist_match.group(1)
+            item = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
+            html_lines.append(f"    <li>{item}</li>")
+            continue
+
+        # Top-level list items: - or *
         list_match = re.match(r"^[-*]\s+(.*)", stripped)
         if list_match:
+            if in_sublist:
+                html_lines.append("  </ul>")
+                in_sublist = False
             if not in_list:
                 html_lines.append("<ul>")
                 in_list = True
             item = list_match.group(1)
-            # Bold: **text**
             item = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", item)
             html_lines.append(f"  <li>{item}</li>")
             continue
 
-        # Close list if we hit a non-list line
+        # Close lists if we hit a non-list line
+        if in_sublist:
+            html_lines.append("  </ul>")
+            in_sublist = False
         if in_list and not stripped:
             html_lines.append("</ul>")
             in_list = False
@@ -395,6 +426,8 @@ def _markdown_to_html(text: str) -> str:
         para = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", stripped)
         html_lines.append(f"<p>{para}</p>")
 
+    if in_sublist:
+        html_lines.append("  </ul>")
     if in_list:
         html_lines.append("</ul>")
 
