@@ -305,7 +305,13 @@ Für jedes Thema:
 - Verwende Markdown: ##/### für Überschriften, #### für Themen, - für Listen, **fett** für Hervorhebungen"""
 
 
-def summarize_with_claude(transcript: str, episode_title: str) -> str:
+MODELS = [
+    ("claude-sonnet-4-6", "Sonnet"),
+    ("claude-haiku-4-5-20251001", "Haiku"),
+]
+
+
+def summarize_with_claude(transcript: str, episode_title: str, model: str) -> str:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
@@ -317,9 +323,9 @@ def summarize_with_claude(transcript: str, episode_title: str) -> str:
     if len(transcript) > 100_000:
         truncated += "\n\n[Transkript wurde auf 100.000 Zeichen gekürzt]"
 
-    log.info(f"Summarizing episode '{episode_title}' with Claude …")
+    log.info(f"Summarizing episode '{episode_title}' with {model} …")
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model,
         max_tokens=12000,  # generous limit for detailed summaries
         messages=[
             {
@@ -445,11 +451,11 @@ def _markdown_to_html(text: str) -> str:
     return "\n".join(html_lines)
 
 
-def build_email(episode: dict, summary: str, transcript_source: str) -> tuple[str, str, str]:
+def build_email(episode: dict, summary: str, transcript_source: str, model_label: str = "Sonnet") -> tuple[str, str, str]:
     """Return (subject, html, plain_text)."""
     title = episode["title"]
     published = episode.get("published", "")
-    subject = f"🎙️ Doppelgänger Zusammenfassung: {title}"
+    subject = f"🎙️ [{model_label}] Doppelgänger Zusammenfassung: {title}"
 
     html_summary = _markdown_to_html(summary)
 
@@ -480,7 +486,7 @@ def build_email(episode: dict, summary: str, transcript_source: str) -> tuple[st
   {html_summary}
   <hr>
   <p style="color:#999;font-size:0.8em;">
-    Automatisch erstellt mit Claude AI &amp; dem Doppelgänger Podcast Summarizer<br>
+    Automatisch erstellt mit Claude {model_label} &amp; dem Doppelgänger Podcast Summarizer<br>
     <a href="https://www.doppelgaenger.io">doppelgaenger.io</a>
   </p>
 </body>
@@ -511,13 +517,14 @@ def main() -> None:
             log.error(f"No transcript available for: {episode['title']}")
             continue
 
-        summary = summarize_with_claude(transcript, episode["title"])
-        subject, html, plain = build_email(episode, summary, source)
-        send_email(subject, html, plain)
+        for model_id, model_label in MODELS:
+            summary = summarize_with_claude(transcript, episode["title"], model=model_id)
+            subject, html, plain = build_email(episode, summary, source, model_label=model_label)
+            send_email(subject, html, plain)
+            time.sleep(2)  # be polite between API calls
 
         save_state(episode["id"], episode["published"])
         log.info(f"Done: {episode['title']}")
-        time.sleep(2)  # be polite between episodes
 
     log.info("All episodes processed.")
 
