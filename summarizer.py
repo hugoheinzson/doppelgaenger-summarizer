@@ -261,36 +261,47 @@ Themen die in keine Rubrik passen kommen unter "Weitere Themen".
 
 ## Gewünschtes Format
 
-### ⚡ Das Wichtigste in 6 Sätzen
-Eine sehr kurze Zusammenfassung für jemanden der nur 120 Sekunden Zeit hat.
+### ⚡ Das Wichtigste in 8 Sätzen
+Eine kompakte Zusammenfassung der Folge für jemanden der nur 2–3 Minuten Zeit hat.
+Nenne die wichtigsten Themen und die zentralen Positionen der Hosts.
 
 ### 📊 Earnings (nur wenn in der Folge vorhanden)
 Für jedes besprochene Unternehmen:
 
 #### **Unternehmensname**
-- Wichtigste Zahlen und Fakten
+- Wichtigste Zahlen und Fakten (Umsatz, Gewinn, Wachstum, Guidance etc.)
+- Kontext und Einordnung: Wie stehen die Zahlen im Vergleich zu Erwartungen oder Vorquartal?
+- Diskussionsverlauf: Welche Aspekte wurden besprochen, worüber waren sich die Hosts einig/uneinig?
 - Meinungen & Kernaussagen:
-  - Was sagen Pip und/oder Glöckner dazu?
+  - Was sagt Pip dazu? (konkrete Einschätzung, Argumentation)
+  - Was sagt Glöckner dazu? (konkrete Einschätzung, Argumentation)
 
 ### 🚨 Schmuddelecke (nur wenn in der Folge vorhanden)
 Für jedes Thema:
 
 #### **Thema**
-- Infos und Fakten
-- Meinungen & Kernaussagen der Hosts
+- Infos, Fakten und Hintergründe
+- Was genau ist passiert oder wurde aufgedeckt?
+- Diskussionsverlauf: Wie haben die Hosts das Thema aufgerollt?
+- Meinungen & Kernaussagen der Hosts (mit Zuordnung wer was gesagt hat)
 
 ### 🎙️ Weitere Themen
 Für jedes Thema:
 
 #### **Thema-Titel**
 - Infos: Wichtigste Fakten, Zahlen, Hintergründe (als Stichpunkte)
+- Kontext: Warum ist das relevant, was ist der größere Zusammenhang?
+- Diskussionsverlauf: Welche Teilaspekte wurden besprochen, wie hat sich die Diskussion entwickelt?
 - Meinungen & Kernaussagen:
-  - Wer hat was gesagt (Pip / Glöckner), konkrete Einschätzungen
+  - Wer hat was gesagt (Pip / Glöckner), konkrete Einschätzungen und Argumentation
+  - Wo waren sie sich einig, wo gab es unterschiedliche Perspektiven?
 
 ## Regeln
-- Halte die Zusammenfassung prägnant und informativ
-- Fokus auf Fakten, Zahlen und konkrete Meinungen
-- Pro Thema 3–6 Stichpunkte für Infos, 1–3 für Meinungen
+- Schreibe ausführlich genug, dass man den Diskussionsverlauf und die Argumente gut nachvollziehen kann
+- Fokus auf Fakten, Zahlen, konkrete Meinungen und die Argumentation dahinter
+- Pro Thema 5–9 Stichpunkte für Infos und Kontext, 2–5 für Meinungen
+- Gib die Positionen von Pip und Glöckner möglichst getrennt und mit ihren jeweiligen Begründungen wieder
+- Wenn die Hosts Vorhersagen, Empfehlungen oder konkrete Ratschläge geben, halte diese fest
 - Verwende Markdown: ##/### für Überschriften, #### für Themen, - für Listen, **fett** für Hervorhebungen"""
 
 
@@ -309,7 +320,7 @@ def summarize_with_claude(transcript: str, episode_title: str) -> str:
     log.info(f"Summarizing episode '{episode_title}' with Claude …")
     message = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8192,  # increased from 2048 to prevent summary truncation
+        max_tokens=12000,  # generous limit for detailed summaries
         messages=[
             {
                 "role": "user",
