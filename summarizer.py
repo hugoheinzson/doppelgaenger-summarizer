@@ -65,7 +65,14 @@ MAX_EPISODES_PER_RUN = 2
 
 
 def fetch_new_episodes(last_id: str | None) -> list[dict]:
-    """Return at most MAX_EPISODES_PER_RUN episodes newer than last_id, oldest first."""
+    """Return all episodes newer than last_id, oldest first.
+
+    Walks the feed from newest to oldest and stops as soon as it hits the
+    last episode we already processed. The result is reversed so callers can
+    process the oldest unprocessed episode first (and never skip one). The
+    per-run cap is applied by the caller, not here, so that a backlog drains
+    in chronological order instead of dropping the oldest entries.
+    """
     log.info("Fetching RSS feed …")
     feed = feedparser.parse(RSS_FEED)
     # bozo is set for minor issues (e.g. encoding warnings); only fail on real errors
@@ -76,8 +83,6 @@ def fetch_new_episodes(last_id: str | None) -> list[dict]:
     for entry in feed.entries:
         ep_id = entry.get("id") or entry.get("guid") or entry.get("link")
         if ep_id == last_id:
-            break
-        if len(episodes) >= MAX_EPISODES_PER_RUN:
             break
         audio_url = None
         for link in entry.get("links", []):
@@ -503,12 +508,36 @@ def main() -> None:
     state = load_state()
     last_id = state.get("last_processed_id")
 
-    episodes = fetch_new_episodes(last_id)
-    if not episodes:
+    new_episodes = fetch_new_episodes(last_id)
+    if not new_episodes:
         log.info("No new episodes. Nothing to do.")
         return
 
-    for episode in episodes:
+    # First run ever (no persisted state). Don't email the entire back catalogue:
+    # just record the newest episode as the baseline. From the next run on, only
+    # genuinely new episodes are summarized and sent — exactly one mail each.
+    if last_id is None:
+        newest = new_episodes[-1]
+        save_state(newest["id"], newest["published"])
+        log.info(
+            "First run — baseline set to '%s' (%s). No mails sent; future "
+            "episodes will be summarized individually.",
+            newest["title"], newest["published"],
+        )
+        return
+
+    # Throttle: process the OLDEST unprocessed episodes first, at most
+    # MAX_EPISODES_PER_RUN per run. State advances to the newest episode we
+    # actually sent, so a backlog drains in order across runs without skips
+    # and without ever re-sending an episode.
+    batch = new_episodes[:MAX_EPISODES_PER_RUN]
+    if len(new_episodes) > MAX_EPISODES_PER_RUN:
+        log.info(
+            "%d new episodes found; processing the oldest %d this run, the rest "
+            "follow next run.", len(new_episodes), MAX_EPISODES_PER_RUN,
+        )
+
+    for episode in batch:
         log.info(f"Processing: {episode['title']}")
         transcript, source = get_transcript(episode)
 
@@ -522,6 +551,8 @@ def main() -> None:
             send_email(subject, html, plain)
             time.sleep(2)  # be polite between API calls
 
+        # Persist immediately after each episode so a crash mid-batch never
+        # causes the just-sent episode to be re-sent on the next run.
         save_state(episode["id"], episode["published"])
         log.info(f"Done: {episode['title']}")
 

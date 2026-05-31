@@ -1,15 +1,23 @@
 name: Doppelgänger Podcast Digest
 
 on:
-  # Run twice a week: Wednesday and Saturday at 10:00 UTC
-  # (episodes usually drop Mon/Thu morning German time)
+  # Check daily at 10:00 UTC. New episodes usually drop Wed/Sat, but running
+  # daily catches them promptly even if a release day shifts. De-duplication via
+  # the persisted state means a day without a new episode simply sends nothing.
   schedule:
-    - cron: "0 10 * * 3"  # Wednesday
-    - cron: "0 10 * * 6"  # Saturday
+    - cron: "0 10 * * *"
   # Allow manual trigger for testing
   workflow_dispatch:
-  push:
-    branches: [main]
+
+# Read-only: state is persisted via the Actions cache, not committed back to the
+# repo. (A push to a protected main would fail and isn't needed.)
+permissions:
+  contents: read
+
+# Avoid overlapping runs (e.g. a manual run during a scheduled one) racing on state.
+concurrency:
+  group: podcast-digest
+  cancel-in-progress: false
 
 jobs:
   summarize:
@@ -20,16 +28,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Restore the last-processed state from cache
-      - name: Restore state cache
-        uses: actions/cache@v4
-        id: state-cache
-        with:
-          path: last_processed.json
-          key: podcast-state-${{ runner.os }}
-          restore-keys: |
-            podcast-state-
-
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -37,6 +35,21 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      # Restore the processed-episode marker (last_processed.json) from the
+      # previous run. This is the single source of truth for de-duplication —
+      # without it every run treats the latest episodes as new and re-sends them
+      # (the cause of the duplicate mails). The key is unique per run, so the
+      # exact key never hits and resolution always falls through to the
+      # `podcast-state-` restore-keys prefix, returning the MOST RECENT saved
+      # state. This avoids the frozen-exact-key trap of a shared restore/save key.
+      - name: Restore episode state
+        uses: actions/cache/restore@v4
+        with:
+          path: last_processed.json
+          key: podcast-state-${{ github.run_id }}
+          restore-keys: |
+            podcast-state-
 
       - name: Run summarizer
         env:
@@ -50,10 +63,13 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python summarizer.py
 
-      # Save updated state so next run knows where we left off
-      - name: Save state cache
-        uses: actions/cache@v4
-        if: always()
+      # Persist the (possibly updated) marker under this run's unique key so the
+      # next run restores it via the prefix above. Guarded on the file existing
+      # so a run that errors before writing state doesn't fail here. Always runs
+      # so state written mid-batch survives.
+      - name: Save episode state
+        if: always() && hashFiles('last_processed.json') != ''
+        uses: actions/cache/save@v4
         with:
           path: last_processed.json
-          key: podcast-state-${{ runner.os }}-${{ github.run_id }}
+          key: podcast-state-${{ github.run_id }}
