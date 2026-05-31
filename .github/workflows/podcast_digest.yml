@@ -43,13 +43,16 @@ jobs:
       # exact key never hits and resolution always falls through to the
       # `podcast-state-` restore-keys prefix, returning the MOST RECENT saved
       # state. This avoids the frozen-exact-key trap of a shared restore/save key.
+      # Namespace bumped to v2 so stale caches from the old broken key scheme
+      # (podcast-state-Linux…, with a frozen baseline) are ignored. Bump again
+      # if you ever need to force a clean bootstrap.
       - name: Restore episode state
         uses: actions/cache/restore@v4
         with:
           path: last_processed.json
-          key: podcast-state-${{ github.run_id }}
+          key: podcast-state-v2-${{ github.run_id }}
           restore-keys: |
-            podcast-state-
+            podcast-state-v2-
 
       - name: Run summarizer
         env:
@@ -72,4 +75,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: last_processed.json
-          key: podcast-state-${{ github.run_id }}
+          key: podcast-state-v2-${{ github.run_id }}
