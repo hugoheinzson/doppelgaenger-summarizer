@@ -55,7 +55,7 @@ Optional repository *variables* (`Settings → Secrets and variables → Actions
 | Variable | Description |
 |----------|-------------|
 | `AWS_REGION` | Bedrock region (default: `eu-central-1`) |
-| `BEDROCK_MODEL_ID` | Inference profile id, e.g. `eu.anthropic.claude-sonnet-5` |
+| `BEDROCK_MODEL_ID` | Inference profile id (default: `eu.anthropic.claude-sonnet-4-6`) |
 
 ### Which LLM provider is used?
 
@@ -78,8 +78,11 @@ Two more things to know about Bedrock:
 
 - Claude must be addressed through the region's **inference profile id** — in
   `eu-central-1` that is the `eu.`-prefixed one. The bare foundation-model id
-  (`anthropic.claude-sonnet-5`) fails with `AccessDeniedException` there. Set
-  `BEDROCK_MODEL_ID` if your account's profile id differs from the default.
+  (`anthropic.claude-sonnet-4-6`) fails with `AccessDeniedException` there. Set
+  `BEDROCK_MODEL_ID` to pick a different model.
+- A profile listed as `ACTIVE` is not necessarily invokable — the newest models
+  (Sonnet 5, Opus 5, Opus 4.7/4.8) are gated per account and return 403 until
+  enabled for it.
 - The IAM user needs `bedrock:InvokeModel` on that inference profile.
 
 ### 3. Create a Gmail App Password

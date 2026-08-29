@@ -317,8 +317,13 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 # id. In eu-central-1 the profile id carries an "eu." prefix — the bare
 # "anthropic.claude-…" id fails with AccessDeniedException there. Override with
 # the BEDROCK_MODEL_ID env var if the profile id differs in your account.
+#
+# Note that a profile being listed as ACTIVE does not mean the account may
+# invoke it: the newest models (Sonnet 5, Opus 5, Opus 4.7/4.8) are gated
+# separately and return 403 until enabled. Sonnet 4.6 is the newest one
+# actually reachable here, and matches what the direct API used.
 BEDROCK_REGION_DEFAULT = "eu-central-1"
-BEDROCK_MODEL_DEFAULT = "eu.anthropic.claude-sonnet-5"
+BEDROCK_MODEL_DEFAULT = "eu.anthropic.claude-sonnet-4-6"
 
 MODEL_LABEL = "Sonnet"
 
