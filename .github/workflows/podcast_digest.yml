@@ -57,8 +57,14 @@ jobs:
       - name: Run summarizer
         env:
           # Summaries run on AWS Bedrock. The provider is picked automatically:
-          # AWS credentials present -> Bedrock, otherwise the direct Anthropic
-          # API via ANTHROPIC_API_KEY. Pin it explicitly with LLM_PROVIDER.
+          # any Bedrock credential present -> Bedrock, otherwise the direct
+          # Anthropic API via ANTHROPIC_API_KEY. Pin it with LLM_PROVIDER.
+          #
+          # Two ways to authenticate against Bedrock — set EITHER:
+          #   1. a Bedrock API key (simplest: one secret, no IAM key pair), or
+          #   2. regular IAM credentials.
+          # If both are set the API key wins.
+          AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}

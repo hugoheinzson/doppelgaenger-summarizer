@@ -39,8 +39,9 @@ Go to `Settings → Secrets and variables → Actions → New repository secret`
 
 | Secret | Description |
 |--------|-------------|
-| `AWS_ACCESS_KEY_ID` | Access key of an IAM user allowed to call Bedrock |
-| `AWS_SECRET_ACCESS_KEY` | Matching secret access key |
+| `AWS_BEARER_TOKEN_BEDROCK` | A Bedrock API key — the simplest option, a single value |
+| `AWS_ACCESS_KEY_ID` | *(Alternative)* Access key of an IAM user allowed to call Bedrock |
+| `AWS_SECRET_ACCESS_KEY` | *(Alternative)* Matching secret access key |
 | `ANTHROPIC_API_KEY` | *(Alternative to Bedrock)* API key from [console.anthropic.com](https://console.anthropic.com) |
 | `EMAIL_FROM` | Sender email address (e.g. your Gmail) |
 | `EMAIL_TO` | Recipient email address |
@@ -65,7 +66,15 @@ The summarizer picks the provider automatically:
 
 Set `LLM_PROVIDER=bedrock` or `LLM_PROVIDER=anthropic` to pin the choice.
 
-Two things to know about Bedrock:
+**Authenticating against Bedrock** — set *either*:
+
+1. `AWS_BEARER_TOKEN_BEDROCK`, a Bedrock API key. One secret, no IAM key pair,
+   no SigV4 signing. Create it in the Bedrock console under *API keys*.
+2. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, regular IAM credentials.
+
+If both are configured, the API key wins.
+
+Two more things to know about Bedrock:
 
 - Claude must be addressed through the region's **inference profile id** — in
   `eu-central-1` that is the `eu.`-prefixed one. The bare foundation-model id
@@ -98,8 +107,10 @@ cd Doppelganger
 pip install -r requirements.txt
 
 # Bedrock (default) — or export ANTHROPIC_API_KEY instead to use the direct API
-export AWS_ACCESS_KEY_ID="AKIA..."
-export AWS_SECRET_ACCESS_KEY="..."
+export AWS_BEARER_TOKEN_BEDROCK="..."   # a Bedrock API key
+# ...or regular IAM credentials instead:
+# export AWS_ACCESS_KEY_ID="AKIA..."
+# export AWS_SECRET_ACCESS_KEY="..."
 export AWS_REGION="eu-central-1"
 
 export EMAIL_FROM="you@gmail.com"

@@ -323,13 +323,24 @@ BEDROCK_MODEL_DEFAULT = "eu.anthropic.claude-sonnet-5"
 MODEL_LABEL = "Sonnet"
 
 
+# Every environment variable that means "we can reach Bedrock". Either a
+# Bedrock API key (a bearer token — one value, no separate secret) or a set of
+# regular AWS credentials: static IAM keys, an OIDC-assumed role, or a profile.
+BEDROCK_CREDENTIAL_ENV_VARS = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_PROFILE",
+)
+
+
 def resolve_provider() -> str:
     """Decide whether to talk to Bedrock or the direct Anthropic API.
 
     LLM_PROVIDER pins the choice explicitly ("bedrock" or "anthropic").
-    Otherwise Bedrock wins whenever AWS credentials are present in the
-    environment — static keys or an OIDC-assumed role both work — and we only
-    fall back to the direct API when they aren't.
+    Otherwise Bedrock wins whenever any Bedrock credential is present in the
+    environment, and we only fall back to the direct API when none is.
     """
     explicit = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
     if explicit in ("bedrock", "anthropic"):
@@ -337,13 +348,8 @@ def resolve_provider() -> str:
     if explicit:
         raise RuntimeError(f"Unknown LLM_PROVIDER: {explicit!r} (use 'bedrock' or 'anthropic')")
 
-    has_aws = bool(
-        os.environ.get("AWS_ACCESS_KEY_ID")
-        or os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE")
-        or os.environ.get("AWS_ROLE_ARN")
-        or os.environ.get("AWS_PROFILE")
-    )
-    return "bedrock" if has_aws else "anthropic"
+    has_bedrock_creds = any(os.environ.get(var) for var in BEDROCK_CREDENTIAL_ENV_VARS)
+    return "bedrock" if has_bedrock_creds else "anthropic"
 
 
 def build_client() -> tuple[object, str]:
@@ -360,15 +366,21 @@ def build_client() -> tuple[object, str]:
         # only the open-weight models (DeepSeek, Mistral, Qwen, …).
         region = os.environ.get("AWS_REGION") or BEDROCK_REGION_DEFAULT
         model = os.environ.get("BEDROCK_MODEL_ID") or BEDROCK_MODEL_DEFAULT
-        log.info(f"Using AWS Bedrock in {region} (model: {model})")
+
+        # The SDK picks up AWS_BEARER_TOKEN_BEDROCK by itself and prefers it
+        # over SigV4 credentials. Log which one is in play so a run that used
+        # the "wrong" credential isn't a mystery afterwards.
+        auth = "Bedrock API key" if os.environ.get("AWS_BEARER_TOKEN_BEDROCK") else "AWS credentials"
+        log.info(f"Using AWS Bedrock in {region} via {auth} (model: {model})")
         return anthropic.AnthropicBedrock(aws_region=region), model
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "No LLM credentials found. Set AWS credentials (AWS_ACCESS_KEY_ID / "
-            "AWS_SECRET_ACCESS_KEY) to use Bedrock, or ANTHROPIC_API_KEY to use "
-            "the direct Anthropic API."
+            "No LLM credentials found. For Bedrock set either "
+            "AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) or AWS_ACCESS_KEY_ID / "
+            "AWS_SECRET_ACCESS_KEY. For the direct Anthropic API set "
+            "ANTHROPIC_API_KEY."
         )
     model = os.environ.get("ANTHROPIC_MODEL") or ANTHROPIC_MODEL
     log.info(f"Using the Anthropic API directly (model: {model})")
