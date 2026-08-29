@@ -56,6 +56,16 @@ jobs:
 
       - name: Run summarizer
         env:
+          # Summaries run on AWS Bedrock. The provider is picked automatically:
+          # AWS credentials present -> Bedrock, otherwise the direct Anthropic
+          # API via ANTHROPIC_API_KEY. Pin it explicitly with LLM_PROVIDER.
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'eu-central-1' }}
+          # Must be the region's inference profile id (the "eu." prefixed one),
+          # not the bare foundation-model id. Optional — defaults in code.
+          BEDROCK_MODEL_ID: ${{ vars.BEDROCK_MODEL_ID }}
+          # Fallback only: used when no AWS credentials are configured.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
           EMAIL_TO: ${{ secrets.EMAIL_TO }}

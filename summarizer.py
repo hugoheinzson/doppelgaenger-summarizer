@@ -10,7 +10,6 @@ import json
 import smtplib
 import logging
 import sys
-import time
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -310,17 +309,74 @@ Für jedes Thema:
 - Verwende Markdown: ##/### für Überschriften, #### für Themen, - für Listen, **fett** für Hervorhebungen"""
 
 
-MODELS = [
-    ("claude-sonnet-4-6", "Sonnet"),
-]
+# Model used on the direct Anthropic API. Only consulted when the provider
+# resolves to "anthropic" (see resolve_provider).
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+# Bedrock serves Claude via *inference profiles*, not the bare foundation-model
+# id. In eu-central-1 the profile id carries an "eu." prefix — the bare
+# "anthropic.claude-…" id fails with AccessDeniedException there. Override with
+# the BEDROCK_MODEL_ID env var if the profile id differs in your account.
+BEDROCK_REGION_DEFAULT = "eu-central-1"
+BEDROCK_MODEL_DEFAULT = "eu.anthropic.claude-sonnet-5"
+
+MODEL_LABEL = "Sonnet"
 
 
-def summarize_with_claude(transcript: str, episode_title: str, model: str) -> str:
+def resolve_provider() -> str:
+    """Decide whether to talk to Bedrock or the direct Anthropic API.
+
+    LLM_PROVIDER pins the choice explicitly ("bedrock" or "anthropic").
+    Otherwise Bedrock wins whenever AWS credentials are present in the
+    environment — static keys or an OIDC-assumed role both work — and we only
+    fall back to the direct API when they aren't.
+    """
+    explicit = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
+    if explicit in ("bedrock", "anthropic"):
+        return explicit
+    if explicit:
+        raise RuntimeError(f"Unknown LLM_PROVIDER: {explicit!r} (use 'bedrock' or 'anthropic')")
+
+    has_aws = bool(
+        os.environ.get("AWS_ACCESS_KEY_ID")
+        or os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE")
+        or os.environ.get("AWS_ROLE_ARN")
+        or os.environ.get("AWS_PROFILE")
+    )
+    return "bedrock" if has_aws else "anthropic"
+
+
+def build_client() -> tuple[object, str]:
+    """Return an (client, model_id) pair for the configured provider.
+
+    Both clients expose the same `messages.create` surface, so the calling code
+    doesn't care which one it got.
+    """
+    provider = resolve_provider()
+
+    if provider == "bedrock":
+        # NOTE: this is the classic bedrock-runtime path. Do not switch to
+        # AnthropicBedrockMantle — the Mantle endpoint does not serve Claude,
+        # only the open-weight models (DeepSeek, Mistral, Qwen, …).
+        region = os.environ.get("AWS_REGION") or BEDROCK_REGION_DEFAULT
+        model = os.environ.get("BEDROCK_MODEL_ID") or BEDROCK_MODEL_DEFAULT
+        log.info(f"Using AWS Bedrock in {region} (model: {model})")
+        return anthropic.AnthropicBedrock(aws_region=region), model
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+        raise RuntimeError(
+            "No LLM credentials found. Set AWS credentials (AWS_ACCESS_KEY_ID / "
+            "AWS_SECRET_ACCESS_KEY) to use Bedrock, or ANTHROPIC_API_KEY to use "
+            "the direct Anthropic API."
+        )
+    model = os.environ.get("ANTHROPIC_MODEL") or ANTHROPIC_MODEL
+    log.info(f"Using the Anthropic API directly (model: {model})")
+    return anthropic.Anthropic(api_key=api_key), model
 
-    client = anthropic.Anthropic(api_key=api_key)
+
+def summarize_with_claude(transcript: str, episode_title: str) -> str:
+    client, model = build_client()
 
     # Truncate transcript to ~100k chars to stay within context limits
     truncated = transcript[:100_000]
@@ -328,17 +384,29 @@ def summarize_with_claude(transcript: str, episode_title: str, model: str) -> st
         truncated += "\n\n[Transkript wurde auf 100.000 Zeichen gekürzt]"
 
     log.info(f"Summarizing episode '{episode_title}' with {model} …")
-    message = client.messages.create(
-        model=model,
-        max_tokens=12000,  # generous limit for detailed summaries
-        messages=[
-            {
-                "role": "user",
-                "content": f"{SUMMARY_PROMPT}\n\n---\nEpisodentitel: {episode_title}\n\nTranskript:\n{truncated}",
-            }
-        ],
-    )
-    return message.content[0].text
+    try:
+        message = client.messages.create(
+            model=model,
+            max_tokens=12000,  # generous limit for detailed summaries
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{SUMMARY_PROMPT}\n\n---\nEpisodentitel: {episode_title}\n\nTranskript:\n{truncated}",
+                }
+            ],
+        )
+    except anthropic.PermissionDeniedError:
+        # On Bedrock this almost always means the model id is a bare foundation
+        # model rather than the region's inference profile. Say so instead of
+        # letting a raw AccessDeniedException surface.
+        log.error(
+            "Bedrock denied access to '%s'. In eu-central-1 Claude is only "
+            "reachable through the inference profile id (the 'eu.' prefixed "
+            "one) — set BEDROCK_MODEL_ID to it.", model,
+        )
+        raise
+
+    return next(block.text for block in message.content if block.type == "text")
 
 
 # ---------------------------------------------------------------------------
@@ -545,11 +613,9 @@ def main() -> None:
             log.error(f"No transcript available for: {episode['title']}")
             continue
 
-        for model_id, model_label in MODELS:
-            summary = summarize_with_claude(transcript, episode["title"], model=model_id)
-            subject, html, plain = build_email(episode, summary, source, model_label=model_label)
-            send_email(subject, html, plain)
-            time.sleep(2)  # be polite between API calls
+        summary = summarize_with_claude(transcript, episode["title"])
+        subject, html, plain = build_email(episode, summary, source, model_label=MODEL_LABEL)
+        send_email(subject, html, plain)
 
         # Persist immediately after each episode so a crash mid-batch never
         # causes the just-sent episode to be re-sent on the next run.
