@@ -1,4 +1,5 @@
-anthropic>=0.40.0
+# [bedrock] pulls in boto3/botocore for SigV4 signing against bedrock-runtime
+anthropic[bedrock]>=0.40.0
 feedparser>=6.0.11
 requests>=2.32.0
 beautifulsoup4>=4.12.0

@@ -10,7 +10,7 @@ import json
 import smtplib
 import logging
 import sys
-import time
+import warnings
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -20,6 +20,7 @@ import re
 
 import feedparser
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup
 import anthropic
 
@@ -27,7 +28,15 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 RSS_FEED = "https://feeds.megaphone.fm/LINDALA4208458418"
+SITE_BASE = "https://doppelgaenger.ai/"
 TRANSCRIPT_BASE = "https://doppelgaenger.ai/podcast/"
+
+# The site truncates the title part of a transcript slug to this many chars,
+# e.g. /podcast/2026-08-28_Profitabel_zu_s
+TITLE_SLUG_LEN = 15
+
+# Cache for the episode-date -> transcript-URL map; see _transcript_index.
+_TRANSCRIPT_INDEX: dict[str, str] | None = None
 STATE_FILE = Path("last_processed.json")
 
 BROWSER_HEADERS = {
@@ -129,28 +138,84 @@ def _parse_date_from_published(published: str) -> str | None:
     return None
 
 
-_UMLAUT_MAP = {"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"}
-
-
-def _transliterate(text: str) -> str:
-    for k, v in _UMLAUT_MAP.items():
-        text = text.replace(k, v)
-    return text
-
-
 def _build_transcript_url(date_str: str, title: str) -> str:
-    """Build doppelgaenger.ai URL from date and episode title.
+    """Guess the doppelgaenger.ai URL from date and episode title.
 
-    The site uses slugs like: 2024-03-07_Episode_Title_Here
-    Umlauts are transliterated and special chars replaced with underscores.
+    Only a fallback — prefer _resolve_transcript_url, which reads the real
+    link off the site index. Reconstructing the slug is guesswork: the site
+    truncates the title part to TITLE_SLUG_LEN characters and substitutes
+    non-alphanumerics one-for-one, without collapsing the result (real slugs
+    include 'Sprit_umsonst__' and 'AI_2_0__SpaceX_'). Whether it transliterates
+    umlauts is unconfirmed; 'ß' becomes '_' rather than 'ss', so it likely does
+    not, and this mirrors that.
     """
-    slug = _transliterate(title)
-    slug = slug.replace(" ", "_").replace("/", "_").replace("|", "_").replace("-", "_")
-    slug = "".join(c for c in slug if c.isalnum() or c == "_")
-    # Collapse multiple underscores and strip trailing ones
-    slug = re.sub(r"_+", "_", slug).strip("_")
-    slug = slug[:60]
-    return f"{TRANSCRIPT_BASE}{date_str}_{slug}"
+    slug = "".join(c if c.isascii() and c.isalnum() else "_" for c in title)
+    return f"{TRANSCRIPT_BASE}{date_str}_{slug[:TITLE_SLUG_LEN]}"
+
+
+def _transcript_index() -> dict[str, str]:
+    """Map episode date ('YYYY-MM-DD') to its transcript URL, from the site index.
+
+    Fetched once per run and cached: the index page carries every episode, and
+    a run summarizes at most MAX_EPISODES_PER_RUN of them.
+    """
+    global _TRANSCRIPT_INDEX
+    if _TRANSCRIPT_INDEX is not None:
+        return _TRANSCRIPT_INDEX
+
+    index: dict[str, str] = {}
+    try:
+        resp = _get_transcript_page(SITE_BASE)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            match = re.match(r"^/podcast/(\d{4}-\d{2}-\d{2})_", anchor["href"])
+            if match:
+                # Keep the first hit per date; the index lists newest first.
+                index.setdefault(match.group(1), SITE_BASE.rstrip("/") + anchor["href"])
+        log.info("Loaded transcript index (%d episodes)", len(index))
+    except (requests.RequestException, ValueError) as e:
+        log.warning("Could not load transcript index (%s) — falling back to a guessed URL", e)
+
+    _TRANSCRIPT_INDEX = index
+    return index
+
+
+def _resolve_transcript_url(date_str: str, title: str) -> str:
+    """Return the episode's transcript URL, preferring the site's own link.
+
+    Matching on the date avoids reproducing the site's slug rules, and so
+    survives both title edits and changes to how titles are slugified.
+    """
+    url = _transcript_index().get(date_str)
+    if url:
+        return url
+    log.warning("No index entry for %s — guessing the URL from the title", date_str)
+    return _build_transcript_url(date_str, title)
+
+
+def _get_transcript_page(url: str) -> requests.Response:
+    """GET a doppelgaenger.ai transcript page, tolerating its expired certificate.
+
+    The site has been serving an expired certificate, which made every fetch
+    fail and silently degraded summaries to the RSS blurb. Verification is
+    still attempted first, so this heals itself the moment the operator renews
+    the certificate — the unverified retry only happens on an actual TLS
+    verification failure, and only for this one host, whose content is public
+    and non-sensitive (we read podcast transcripts, we send nothing).
+    """
+    try:
+        return requests.get(url, headers=BROWSER_HEADERS, timeout=20)
+    except requests.exceptions.SSLError as e:
+        log.warning(
+            "TLS verification failed for %s (%s). Retrying without "
+            "verification — this host's certificate is expired and its content "
+            "is public.", url, e,
+        )
+        # Suppress only the one warning this retry provokes, not globally.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", InsecureRequestWarning)
+            return requests.get(url, headers=BROWSER_HEADERS, timeout=20, verify=False)
 
 
 def fetch_transcript_from_site(episode: dict) -> str | None:
@@ -160,11 +225,11 @@ def fetch_transcript_from_site(episode: dict) -> str | None:
         log.warning("Could not parse date from: %s", episode["published"])
         return None
 
-    url = _build_transcript_url(date_str, episode["title"])
+    url = _resolve_transcript_url(date_str, episode["title"])
     log.info(f"Trying transcript URL: {url}")
 
     try:
-        resp = requests.get(url, headers=BROWSER_HEADERS, timeout=20)
+        resp = _get_transcript_page(url)
         if resp.status_code == 404:
             log.info("Transcript not found on doppelgaenger.ai (404)")
             return None
@@ -310,17 +375,91 @@ Für jedes Thema:
 - Verwende Markdown: ##/### für Überschriften, #### für Themen, - für Listen, **fett** für Hervorhebungen"""
 
 
-MODELS = [
-    ("claude-sonnet-4-6", "Sonnet"),
-]
+# Model used on the direct Anthropic API. Only consulted when the provider
+# resolves to "anthropic" (see resolve_provider).
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+
+# Bedrock serves Claude via *inference profiles*, not the bare foundation-model
+# id. In eu-central-1 the profile id carries an "eu." prefix — the bare
+# "anthropic.claude-…" id fails with AccessDeniedException there. Override with
+# the BEDROCK_MODEL_ID env var if the profile id differs in your account.
+#
+# Note that a profile being listed as ACTIVE does not mean the account may
+# invoke it: the newest models (Sonnet 5, Opus 5, Opus 4.7/4.8) are gated
+# separately and return 403 until enabled. Sonnet 4.6 is the newest one
+# actually reachable here, and matches what the direct API used.
+BEDROCK_REGION_DEFAULT = "eu-central-1"
+BEDROCK_MODEL_DEFAULT = "eu.anthropic.claude-sonnet-4-6"
+
+MODEL_LABEL = "Sonnet"
 
 
-def summarize_with_claude(transcript: str, episode_title: str, model: str) -> str:
+# Every environment variable that means "we can reach Bedrock". Either a
+# Bedrock API key (a bearer token — one value, no separate secret) or a set of
+# regular AWS credentials: static IAM keys, an OIDC-assumed role, or a profile.
+BEDROCK_CREDENTIAL_ENV_VARS = (
+    "AWS_BEARER_TOKEN_BEDROCK",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_PROFILE",
+)
+
+
+def resolve_provider() -> str:
+    """Decide whether to talk to Bedrock or the direct Anthropic API.
+
+    LLM_PROVIDER pins the choice explicitly ("bedrock" or "anthropic").
+    Otherwise Bedrock wins whenever any Bedrock credential is present in the
+    environment, and we only fall back to the direct API when none is.
+    """
+    explicit = (os.environ.get("LLM_PROVIDER") or "").strip().lower()
+    if explicit in ("bedrock", "anthropic"):
+        return explicit
+    if explicit:
+        raise RuntimeError(f"Unknown LLM_PROVIDER: {explicit!r} (use 'bedrock' or 'anthropic')")
+
+    has_bedrock_creds = any(os.environ.get(var) for var in BEDROCK_CREDENTIAL_ENV_VARS)
+    return "bedrock" if has_bedrock_creds else "anthropic"
+
+
+def build_client() -> tuple[object, str]:
+    """Return an (client, model_id) pair for the configured provider.
+
+    Both clients expose the same `messages.create` surface, so the calling code
+    doesn't care which one it got.
+    """
+    provider = resolve_provider()
+
+    if provider == "bedrock":
+        # NOTE: this is the classic bedrock-runtime path. Do not switch to
+        # AnthropicBedrockMantle — the Mantle endpoint does not serve Claude,
+        # only the open-weight models (DeepSeek, Mistral, Qwen, …).
+        region = os.environ.get("AWS_REGION") or BEDROCK_REGION_DEFAULT
+        model = os.environ.get("BEDROCK_MODEL_ID") or BEDROCK_MODEL_DEFAULT
+
+        # The SDK picks up AWS_BEARER_TOKEN_BEDROCK by itself and prefers it
+        # over SigV4 credentials. Log which one is in play so a run that used
+        # the "wrong" credential isn't a mystery afterwards.
+        auth = "Bedrock API key" if os.environ.get("AWS_BEARER_TOKEN_BEDROCK") else "AWS credentials"
+        log.info(f"Using AWS Bedrock in {region} via {auth} (model: {model})")
+        return anthropic.AnthropicBedrock(aws_region=region), model
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+        raise RuntimeError(
+            "No LLM credentials found. For Bedrock set either "
+            "AWS_BEARER_TOKEN_BEDROCK (a Bedrock API key) or AWS_ACCESS_KEY_ID / "
+            "AWS_SECRET_ACCESS_KEY. For the direct Anthropic API set "
+            "ANTHROPIC_API_KEY."
+        )
+    model = os.environ.get("ANTHROPIC_MODEL") or ANTHROPIC_MODEL
+    log.info(f"Using the Anthropic API directly (model: {model})")
+    return anthropic.Anthropic(api_key=api_key), model
 
-    client = anthropic.Anthropic(api_key=api_key)
+
+def summarize_with_claude(transcript: str, episode_title: str) -> str:
+    client, model = build_client()
 
     # Truncate transcript to ~100k chars to stay within context limits
     truncated = transcript[:100_000]
@@ -328,17 +467,29 @@ def summarize_with_claude(transcript: str, episode_title: str, model: str) -> st
         truncated += "\n\n[Transkript wurde auf 100.000 Zeichen gekürzt]"
 
     log.info(f"Summarizing episode '{episode_title}' with {model} …")
-    message = client.messages.create(
-        model=model,
-        max_tokens=12000,  # generous limit for detailed summaries
-        messages=[
-            {
-                "role": "user",
-                "content": f"{SUMMARY_PROMPT}\n\n---\nEpisodentitel: {episode_title}\n\nTranskript:\n{truncated}",
-            }
-        ],
-    )
-    return message.content[0].text
+    try:
+        message = client.messages.create(
+            model=model,
+            max_tokens=12000,  # generous limit for detailed summaries
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{SUMMARY_PROMPT}\n\n---\nEpisodentitel: {episode_title}\n\nTranskript:\n{truncated}",
+                }
+            ],
+        )
+    except anthropic.PermissionDeniedError:
+        # On Bedrock this almost always means the model id is a bare foundation
+        # model rather than the region's inference profile. Say so instead of
+        # letting a raw AccessDeniedException surface.
+        log.error(
+            "Bedrock denied access to '%s'. In eu-central-1 Claude is only "
+            "reachable through the inference profile id (the 'eu.' prefixed "
+            "one) — set BEDROCK_MODEL_ID to it.", model,
+        )
+        raise
+
+    return next(block.text for block in message.content if block.type == "text")
 
 
 # ---------------------------------------------------------------------------
@@ -545,11 +696,9 @@ def main() -> None:
             log.error(f"No transcript available for: {episode['title']}")
             continue
 
-        for model_id, model_label in MODELS:
-            summary = summarize_with_claude(transcript, episode["title"], model=model_id)
-            subject, html, plain = build_email(episode, summary, source, model_label=model_label)
-            send_email(subject, html, plain)
-            time.sleep(2)  # be polite between API calls
+        summary = summarize_with_claude(transcript, episode["title"])
+        subject, html, plain = build_email(episode, summary, source, model_label=MODEL_LABEL)
+        send_email(subject, html, plain)
 
         # Persist immediately after each episode so a crash mid-batch never
         # causes the just-sent episode to be re-sent on the next run.

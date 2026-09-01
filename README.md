@@ -39,13 +39,51 @@ Go to `Settings → Secrets and variables → Actions → New repository secret`
 
 | Secret | Description |
 |--------|-------------|
-| `ANTHROPIC_API_KEY` | API key from [console.anthropic.com](https://console.anthropic.com) |
+| `AWS_BEARER_TOKEN_BEDROCK` | A Bedrock API key — the simplest option, a single value |
+| `AWS_ACCESS_KEY_ID` | *(Alternative)* Access key of an IAM user allowed to call Bedrock |
+| `AWS_SECRET_ACCESS_KEY` | *(Alternative)* Matching secret access key |
+| `ANTHROPIC_API_KEY` | *(Alternative to Bedrock)* API key from [console.anthropic.com](https://console.anthropic.com) |
 | `EMAIL_FROM` | Sender email address (e.g. your Gmail) |
 | `EMAIL_TO` | Recipient email address |
 | `EMAIL_PASSWORD` | App password — see below |
 | `EMAIL_SMTP_HOST` | SMTP server (default: `smtp.gmail.com`) |
 | `EMAIL_SMTP_PORT` | SMTP port (default: `587`) |
 | `OPENAI_API_KEY` | *(Optional)* Only needed if doppelgaenger.ai is unavailable |
+
+Optional repository *variables* (`Settings → Secrets and variables → Actions → Variables`):
+
+| Variable | Description |
+|----------|-------------|
+| `AWS_REGION` | Bedrock region (default: `eu-central-1`) |
+| `BEDROCK_MODEL_ID` | Inference profile id (default: `eu.anthropic.claude-sonnet-4-6`) |
+
+### Which LLM provider is used?
+
+The summarizer picks the provider automatically:
+
+- **AWS credentials present → Amazon Bedrock.** This is the default setup.
+- **No AWS credentials → the direct Anthropic API** via `ANTHROPIC_API_KEY`.
+
+Set `LLM_PROVIDER=bedrock` or `LLM_PROVIDER=anthropic` to pin the choice.
+
+**Authenticating against Bedrock** — set *either*:
+
+1. `AWS_BEARER_TOKEN_BEDROCK`, a Bedrock API key. One secret, no IAM key pair,
+   no SigV4 signing. Create it in the Bedrock console under *API keys*.
+2. `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, regular IAM credentials.
+
+If both are configured, the API key wins.
+
+Two more things to know about Bedrock:
+
+- Claude must be addressed through the region's **inference profile id** — in
+  `eu-central-1` that is the `eu.`-prefixed one. The bare foundation-model id
+  (`anthropic.claude-sonnet-4-6`) fails with `AccessDeniedException` there. Set
+  `BEDROCK_MODEL_ID` to pick a different model.
+- A profile listed as `ACTIVE` is not necessarily invokable — the newest models
+  (Sonnet 5, Opus 5, Opus 4.7/4.8) are gated per account and return 403 until
+  enabled for it.
+- The IAM user needs `bedrock:InvokeModel` on that inference profile.
 
 ### 3. Create a Gmail App Password
 
@@ -71,7 +109,13 @@ git clone https://github.com/YOUR_USERNAME/Doppelganger
 cd Doppelganger
 pip install -r requirements.txt
 
-export ANTHROPIC_API_KEY="sk-ant-..."
+# Bedrock (default) — or export ANTHROPIC_API_KEY instead to use the direct API
+export AWS_BEARER_TOKEN_BEDROCK="..."   # a Bedrock API key
+# ...or regular IAM credentials instead:
+# export AWS_ACCESS_KEY_ID="AKIA..."
+# export AWS_SECRET_ACCESS_KEY="..."
+export AWS_REGION="eu-central-1"
+
 export EMAIL_FROM="you@gmail.com"
 export EMAIL_TO="you@gmail.com"
 export EMAIL_PASSWORD="xxxx xxxx xxxx xxxx"
@@ -85,8 +129,11 @@ Per episode (transcript ~20k tokens input, summary ~800 tokens output):
 
 | Model | Approx. cost |
 |-------|-------------|
-| claude-sonnet-4-6 *(default)* | ~$0.05 |
-| claude-haiku-4-5 | ~$0.02 |
+| Claude Sonnet on Bedrock *(default)* | ~$0.05 |
+| claude-sonnet-4-6 (direct API) | ~$0.05 |
+
+Bedrock is billed through AWS at [Bedrock pricing](https://aws.amazon.com/bedrock/pricing/),
+which differs from the first-party Anthropic API rates.
 
 Whisper fallback (only if doppelgaenger.ai is down): ~$0.50–1.00/episode depending on length.
 
