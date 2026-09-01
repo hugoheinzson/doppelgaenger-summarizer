@@ -10,6 +10,7 @@ import json
 import smtplib
 import logging
 import sys
+import warnings
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,6 +20,7 @@ import re
 
 import feedparser
 import requests
+from urllib3.exceptions import InsecureRequestWarning
 from bs4 import BeautifulSoup
 import anthropic
 
@@ -26,7 +28,15 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
 RSS_FEED = "https://feeds.megaphone.fm/LINDALA4208458418"
+SITE_BASE = "https://doppelgaenger.ai/"
 TRANSCRIPT_BASE = "https://doppelgaenger.ai/podcast/"
+
+# The site truncates the title part of a transcript slug to this many chars,
+# e.g. /podcast/2026-08-28_Profitabel_zu_s
+TITLE_SLUG_LEN = 15
+
+# Cache for the episode-date -> transcript-URL map; see _transcript_index.
+_TRANSCRIPT_INDEX: dict[str, str] | None = None
 STATE_FILE = Path("last_processed.json")
 
 BROWSER_HEADERS = {
@@ -128,28 +138,84 @@ def _parse_date_from_published(published: str) -> str | None:
     return None
 
 
-_UMLAUT_MAP = {"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"}
-
-
-def _transliterate(text: str) -> str:
-    for k, v in _UMLAUT_MAP.items():
-        text = text.replace(k, v)
-    return text
-
-
 def _build_transcript_url(date_str: str, title: str) -> str:
-    """Build doppelgaenger.ai URL from date and episode title.
+    """Guess the doppelgaenger.ai URL from date and episode title.
 
-    The site uses slugs like: 2024-03-07_Episode_Title_Here
-    Umlauts are transliterated and special chars replaced with underscores.
+    Only a fallback — prefer _resolve_transcript_url, which reads the real
+    link off the site index. Reconstructing the slug is guesswork: the site
+    truncates the title part to TITLE_SLUG_LEN characters and substitutes
+    non-alphanumerics one-for-one, without collapsing the result (real slugs
+    include 'Sprit_umsonst__' and 'AI_2_0__SpaceX_'). Whether it transliterates
+    umlauts is unconfirmed; 'ß' becomes '_' rather than 'ss', so it likely does
+    not, and this mirrors that.
     """
-    slug = _transliterate(title)
-    slug = slug.replace(" ", "_").replace("/", "_").replace("|", "_").replace("-", "_")
-    slug = "".join(c for c in slug if c.isalnum() or c == "_")
-    # Collapse multiple underscores and strip trailing ones
-    slug = re.sub(r"_+", "_", slug).strip("_")
-    slug = slug[:60]
-    return f"{TRANSCRIPT_BASE}{date_str}_{slug}"
+    slug = "".join(c if c.isascii() and c.isalnum() else "_" for c in title)
+    return f"{TRANSCRIPT_BASE}{date_str}_{slug[:TITLE_SLUG_LEN]}"
+
+
+def _transcript_index() -> dict[str, str]:
+    """Map episode date ('YYYY-MM-DD') to its transcript URL, from the site index.
+
+    Fetched once per run and cached: the index page carries every episode, and
+    a run summarizes at most MAX_EPISODES_PER_RUN of them.
+    """
+    global _TRANSCRIPT_INDEX
+    if _TRANSCRIPT_INDEX is not None:
+        return _TRANSCRIPT_INDEX
+
+    index: dict[str, str] = {}
+    try:
+        resp = _get_transcript_page(SITE_BASE)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for anchor in soup.find_all("a", href=True):
+            match = re.match(r"^/podcast/(\d{4}-\d{2}-\d{2})_", anchor["href"])
+            if match:
+                # Keep the first hit per date; the index lists newest first.
+                index.setdefault(match.group(1), SITE_BASE.rstrip("/") + anchor["href"])
+        log.info("Loaded transcript index (%d episodes)", len(index))
+    except (requests.RequestException, ValueError) as e:
+        log.warning("Could not load transcript index (%s) — falling back to a guessed URL", e)
+
+    _TRANSCRIPT_INDEX = index
+    return index
+
+
+def _resolve_transcript_url(date_str: str, title: str) -> str:
+    """Return the episode's transcript URL, preferring the site's own link.
+
+    Matching on the date avoids reproducing the site's slug rules, and so
+    survives both title edits and changes to how titles are slugified.
+    """
+    url = _transcript_index().get(date_str)
+    if url:
+        return url
+    log.warning("No index entry for %s — guessing the URL from the title", date_str)
+    return _build_transcript_url(date_str, title)
+
+
+def _get_transcript_page(url: str) -> requests.Response:
+    """GET a doppelgaenger.ai transcript page, tolerating its expired certificate.
+
+    The site has been serving an expired certificate, which made every fetch
+    fail and silently degraded summaries to the RSS blurb. Verification is
+    still attempted first, so this heals itself the moment the operator renews
+    the certificate — the unverified retry only happens on an actual TLS
+    verification failure, and only for this one host, whose content is public
+    and non-sensitive (we read podcast transcripts, we send nothing).
+    """
+    try:
+        return requests.get(url, headers=BROWSER_HEADERS, timeout=20)
+    except requests.exceptions.SSLError as e:
+        log.warning(
+            "TLS verification failed for %s (%s). Retrying without "
+            "verification — this host's certificate is expired and its content "
+            "is public.", url, e,
+        )
+        # Suppress only the one warning this retry provokes, not globally.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", InsecureRequestWarning)
+            return requests.get(url, headers=BROWSER_HEADERS, timeout=20, verify=False)
 
 
 def fetch_transcript_from_site(episode: dict) -> str | None:
@@ -159,11 +225,11 @@ def fetch_transcript_from_site(episode: dict) -> str | None:
         log.warning("Could not parse date from: %s", episode["published"])
         return None
 
-    url = _build_transcript_url(date_str, episode["title"])
+    url = _resolve_transcript_url(date_str, episode["title"])
     log.info(f"Trying transcript URL: {url}")
 
     try:
-        resp = requests.get(url, headers=BROWSER_HEADERS, timeout=20)
+        resp = _get_transcript_page(url)
         if resp.status_code == 404:
             log.info("Transcript not found on doppelgaenger.ai (404)")
             return None
